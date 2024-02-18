@@ -5,8 +5,18 @@ import sharp from 'sharp'
 // i could make this class based and even split functions up to appropriate files and areas in the repo.
 // I guess to make things easy for you to read ill do a simpler approach and easier for me
 
+interface RgbImageData {
+  key: string
+  averageRGB: {
+    r: number
+    g: number
+    b: number
+  }
+}
+
 interface RgbAssetData {
   key: string
+  subfolder: string
   averageRGB: {
     r: number
     g: number
@@ -17,39 +27,48 @@ interface RgbAssetData {
 interface DeltaEasssetObject {
   key: number
   assetKey: string
+  assetSubfolder: string
 }
 
-const fetchAssetsRGB = async(): Promise<{ fileName: string, averageRGB: { r: number, g: number, b: number } }[]> => {
-  const assetsPath = path.join(__dirname, 'assets')
+const fetchAssetsRGB = async(): Promise<{ fileName: string, subfolder: string, averageRGB: { r: number, g: number, b: number } }[]> => {
+  const assetsPath = path.join(__dirname, '101_ObjectCategories')
   
   try {
     const files = await fs.promises.readdir(assetsPath)
     
-    const results = await Promise.all(files.map(async file => {
+    const subfolders = await Promise.all(files.map(async subfolder => {
 
 
-      const filePath = path.join(assetsPath, file)
-      const { data, info } = await sharp(filePath).raw().toBuffer({ resolveWithObject: true })
-      const length = info.width * info.height
-      let [rSum, gSum, bSum] = [0, 0, 0]
+      const imagesInSubfolder = await fs.promises.readdir(assetsPath +`/${subfolder}`)
+      const images = await Promise.all(imagesInSubfolder.map(async image => {
 
-      for (let i = 0; i < data.length; i += 3) {
-        rSum += data[i]
-        gSum += data[i + 1]
-        bSum += data[i + 2]
-      }
-
-      return {
-        fileName: file,
-        averageRGB: {
-          r: Math.round(rSum / length),
-          g: Math.round(gSum / length),
-          b: Math.round(bSum / length),
-        },
-      }
+        const filePath = path.join(assetsPath, subfolder, image)
+        const { data, info } = await sharp(filePath).raw().toBuffer({ resolveWithObject: true })
+        const length = info.width * info.height
+        let [rSum, gSum, bSum] = [0, 0, 0]
+  
+        for (let i = 0; i < data.length; i += 3) {
+          rSum += data[i]
+          gSum += data[i + 1]
+          bSum += data[i + 2]
+        }
+  
+        return {
+          fileName: image,
+          subfolder: subfolder,
+          averageRGB: {
+            r: Math.round(rSum / length),
+            g: Math.round(gSum / length),
+            b: Math.round(bSum / length),
+          },
+        }
+      }))
+      return images
+      
     }))
+    throw new Error('Failed to process images.')
 
-    return results
+
   } catch (error) {
     console.error('Error processing images:', error)
     throw new Error('Failed to process images.')
@@ -70,8 +89,10 @@ const saveAssetsDataInObject = async(): Promise<RgbAssetData[]> => {
 
       console.log(`${result.fileName}: RGB(${result.averageRGB.r}, ${result.averageRGB.g}, ${result.averageRGB.b})`)
 
+      // save ALL assets data in one object to be fetched
       assetsRGBData.push({
         key: result.fileName,
+        subfolder: result.subfolder,
         averageRGB: {
           r: result.averageRGB.r, 
           g: result.averageRGB.g, 
@@ -88,7 +109,7 @@ const saveAssetsDataInObject = async(): Promise<RgbAssetData[]> => {
 }
 
 
-const splitImageAndCalculateRGB = async(base64Image: string): Promise<RgbAssetData[]> => {
+const splitImageAndCalculateRGB = async(base64Image: string): Promise<RgbImageData[]> => {
 
   // from our resolver from the front end sent mutation we are to send this base64 image to this function (directly from resolver, bull queue or even save to db and ping back)
   const imageBuffer = Buffer.from(base64Image, 'base64')
@@ -103,7 +124,7 @@ const splitImageAndCalculateRGB = async(base64Image: string): Promise<RgbAssetDa
   
   const pieceWidth = width / 20
   const pieceHeight = height / 20
-  const results: RgbAssetData[] = []
+  const results: RgbImageData[] = []
 
   let peiceNumber = 0
   for (let y = 0; y < 20; y++) {
@@ -227,13 +248,13 @@ const compareColors = async(rgbA: number[], rgbB: number[]) =>{
   return deltaE(labA, labB)
 }
 
-const  fetchImage = async (assetKey: string) => {
-  return path.join(__dirname, 'assets', `${assetKey}.jpg`);
+const  fetchImage = async (pathToAssetImage: string) => {
+  return path.join(__dirname, 'assets', `${pathToAssetImage}.jpg`);
 }
 
 
-const resizeImage = async (assetKey: string) => {
-  const imagePath = await fetchImage(assetKey)
+const resizeImage = async (pathToAssetImage: string) => {
+  const imagePath = await fetchImage(pathToAssetImage)
 
 
 
@@ -253,7 +274,7 @@ const convertImageToBase64 = async(imagePath: fs.PathOrFileDescriptor) =>{
 export const processMosaic = async(base64Image: string): Promise<string> =>{
   
   const assetRGBObject = await saveAssetsDataInObject()
-  const uploadedRGBObject = await splitImageAndCalculateRGB(base64Image)
+  const uploadedRGBObject = await splitImageAndCalculateRGB(base64Image) as RgbImageData[]
 
   // now that i have my assets saved in an object with key = asset name, rgb values saved within that
   // and i have the dissected 400 peice image thats been uploaded in the same format
@@ -273,7 +294,7 @@ export const processMosaic = async(base64Image: string): Promise<string> =>{
     const uploadedKey = Number(uploadedRGBObject)
     const imageSegment = uploadedRGBObject.find((segment)=> Number(segment.key) === index)
     let matchingImageKey: string = ''
-
+    let assetSubfolder:string =  ''
     if (imageSegment) {
 
       const segmentR = imageSegment.averageRGB.r
@@ -293,12 +314,13 @@ export const processMosaic = async(base64Image: string): Promise<string> =>{
         if (colorDifference<lowestDifference) { 
           lowestDifference = colorDifference
           matchingImageKey = assetImage.key
+          assetSubfolder = assetImage.subfolder
         }
 
     
       }
 
-      arrayOfMatchingStrings.push({key: index, assetKey: matchingImageKey}) // this will then save each matching image as key in order from 0 - 400 as key is number and assetKey is the key of the image pulled from the assetsfolder
+      arrayOfMatchingStrings.push({key: index, assetKey: matchingImageKey, assetSubfolder: assetSubfolder}) // this will then save each matching image as key in order from 0 - 400 as key is number and assetKey is the key of the image pulled from the assetsfolder
 
     }
 
@@ -328,7 +350,11 @@ export const processMosaic = async(base64Image: string): Promise<string> =>{
     arrayOfMatchingStrings.sort((a, b) => a.key - b.key)
   
     for (const item of arrayOfMatchingStrings) {
-      const imageBuffer = await resizeImage(item.assetKey)
+
+      const pathToAssetImage = `${item.assetSubfolder}`+`/`+`${item.assetKey}`
+
+
+      const imageBuffer = await resizeImage(pathToAssetImage)
       const rowIndex = Math.floor(item.key / imagesPerRow)
       const columnIndex = item.key % imagesPerRow
       const x = columnIndex * imageSize
