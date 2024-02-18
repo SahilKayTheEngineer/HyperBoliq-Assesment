@@ -32,6 +32,7 @@ And then return the new processed image back to the front end component for the 
 - Upon image selection, the user can crop the image to a square format.
 - After cropping, the image is automatically submitted to the backend for mosaic processing.
 - Upon processing the new mosaic image built from assets matching the 400 piece image will be retuned
+- Assets folder named 101_ObjectCategories (Caltech file provided) is implied to exist on the same level in repo
 
 ## Backend
 
